@@ -24,6 +24,7 @@ import os
 from Queue import Queue
 import re
 import sys
+import time
 import yaml
 
 import concurrent.futures
@@ -86,8 +87,18 @@ class RpcMaas(object):
             self.conn = self.driver(None, None, ex_force_base_url=url,
                                     ex_force_auth_token=token)
 
-    def _get_overview(self):
-        self.overview = self.conn.ex_views_overview()
+    def _get_overview(self, retries=5, sleep=60):
+        for attempt in range(retries):
+            try:
+                self.overview = self.conn.ex_views_overview()
+                break
+            except Exception as e:
+                print("Getting MaaS Overview failed attempt "
+                      "{attempt}/{attempts}. {e}".format(
+                          attempt=attempt + 1,
+                          attempts=retries,
+                          e=e))
+                time.sleep(sleep)
 
     def _add_links(self):
         """Add missing parent/child links to objects"""
@@ -448,7 +459,7 @@ class RpcMassCli(object):
         """List Checks"""
         self._write(self.rpcm.get_checks(self.args.checkmatch))
 
-    def _get_failed_checks(self, checks=None):
+    def _get_failed_checks(self, checks=None, retries=5, delay=60):
         failed_checks = []
         if checks is None:
             checks = []
@@ -458,21 +469,30 @@ class RpcMassCli(object):
                         continue
                     checks.append(check)
         for check in checks:
+            for attempt in range(retries):
                 validation_error = ""
                 try:
                     result = self.rpcm.conn.test_existing_check(check)
+                    break
                 except rackspace.RackspaceMonitoringValidationError as e:
                     validation_error = (" Validation Error: %(s):"
                                         % {'e': e.message})
-                    break
+                except Exception as e:
+                    print("Error executing check {check}  "
+                          "{attempt}/{attempts}. {e}".format(
+                              check=check,
+                              attempt=attempt + 1,
+                              attempts=retries,
+                              e=e))
+                time.sleep(delay)
 
-                status = result[0]['status']
-                completed = result[0]['available']
-                check.state = (" Completed:%(completed)s Status:%(status)s"
-                               % {'completed': completed, 'status': status})
-                if completed is False or validation_error != "":
-                    check.bullet = "!"
-                    failed_checks.append(check)
+            status = result[0]['status']
+            completed = result[0]['available']
+            check.state = (" Completed:%(completed)s Status:%(status)s"
+                           % {'completed': completed, 'status': status})
+            if completed is False or validation_error != "":
+                check.bullet = "!"
+                failed_checks.append(check)
 
         return (checks, failed_checks)
 
